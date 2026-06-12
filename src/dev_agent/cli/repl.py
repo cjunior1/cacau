@@ -55,16 +55,28 @@ def _render_tool_result(name: str, output: str) -> None:
     console.print(Panel(trimmed, title=f"[dim]{name} result[/dim]", border_style="dim", expand=False))
 
 
-async def _stream_response(harness: "AgentHarness", prompt: str, thread_id: str, workspace: str) -> str:
+async def _stream_response(
+    harness: "AgentHarness",
+    prompt: str,
+    thread_id: str,
+    workspace: str,
+    default_profile: str | None,
+) -> str:
     """Stream the agent response, rendering events as they arrive."""
     full_response = ""
-    console.print()  # blank line before response
+    is_auto = default_profile is None and harness.settings.agent.profile == "auto"
+    console.print()
 
-    async for event in harness.run(prompt, thread_id=thread_id, workspace=workspace):
+    async for event in harness.run(prompt, thread_id=thread_id, workspace=workspace, profile=default_profile):
         etype = event["type"]
         payload = event["payload"]
 
-        if etype == "token":
+        if etype == "profile_selected" and is_auto:
+            name = payload["name"]
+            model = payload["model"]
+            console.print(f"[dim][auto → [cyan]{name}[/cyan] · {model}][/dim]")
+
+        elif etype == "token":
             console.print(payload, end="", highlight=False)
             full_response += payload
 
@@ -79,11 +91,11 @@ async def _stream_response(harness: "AgentHarness", prompt: str, thread_id: str,
                 console.print(Markdown(payload))
                 full_response = payload
 
-    console.print()  # newline after streaming
+    console.print()
     return full_response
 
 
-async def run_repl(harness: "AgentHarness", workspace: str = ".") -> None:
+async def run_repl(harness: "AgentHarness", workspace: str = ".", default_profile: str | None = None) -> None:
     """Start the interactive REPL loop."""
     from dev_agent.tools.registry import list_tools
 
@@ -155,7 +167,7 @@ async def run_repl(harness: "AgentHarness", workspace: str = ".") -> None:
 
         # --- agent invocation ---
         try:
-            await _stream_response(harness, user_input, thread_id, workspace)
+            await _stream_response(harness, user_input, thread_id, workspace, default_profile)
         except Exception as e:
             console.print(f"[red]Error:[/] {e}")
 
