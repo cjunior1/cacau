@@ -1,6 +1,5 @@
 """Configuration management with pydantic-settings and YAML support."""
 
-import os
 from pathlib import Path
 from typing import Any
 
