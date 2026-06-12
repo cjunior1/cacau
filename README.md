@@ -82,6 +82,113 @@ dev-agent config show      # inspect active configuration
 dev-agent tools            # list all available tools
 ```
 
+## Examples
+
+### Fixing a bug end-to-end
+
+```
+$ dev-agent chat --workspace ~/my-project
+
+╭─────────────────────────────────────────────────────╮
+│ Dev Agent — interactive mode                        │
+│ Type your request or a /command. Use /help.         │
+╰─────────────────────────────────────────────────────╯
+Thread: a3f1...  |  Workspace: ~/my-project
+
+you> the test_payment.py tests are failing, can you investigate and fix?
+
+⚙ git_status  (cwd=.)
+  → M  src/payments/processor.py
+     M  tests/test_payment.py
+
+⚙ file_read  (path=tests/test_payment.py)
+  → ...
+
+⚙ test_runner  (path=tests/test_payment.py, framework=pytest)
+  → FAILED tests/test_payment.py::test_refund_amount
+     AssertionError: assert 90.0 == 100.0
+
+⚙ file_read  (path=src/payments/processor.py)
+  → ...
+
+⚙ file_write  (path=src/payments/processor.py)
+  → Wrote src/payments/processor.py (1823 chars)
+
+⚙ test_runner  (path=tests/test_payment.py, framework=pytest)
+  → 4 passed in 0.31s
+
+Found a sign error in `calculate_refund()` on line 42 — it was subtracting
+the fee twice. Fixed and all 4 tests pass now.
+
+you> commit it
+
+⚙ git_commit  (message=fix: correct double-fee deduction in calculate_refund, add_all=True)
+  → [main 7c3a1f2] fix: correct double-fee deduction in calculate_refund
+
+Done. Committed to main.
+
+you> /exit
+```
+
+---
+
+### Reviewing a PR via webhook
+
+Configure the GitHub webhook to point to your server:
+
+```
+Payload URL:  http://your-server:8080/webhook/github
+Content type: application/json
+Secret:       my-hmac-secret
+Events:       Pull requests
+```
+
+Start the server:
+
+```bash
+dev-agent serve --port 8080 --secret my-hmac-secret --workspace ~/my-project
+```
+
+When a PR is opened, the agent automatically reviews it and logs findings:
+
+```
+INFO:     POST /webhook/github  →  202 Accepted  thread=b8d2e...
+# Agent runs in background: reads diff, checks tests, reports concerns
+```
+
+---
+
+### Single-shot in CI/CD pipeline
+
+```yaml
+# .github/workflows/review.yml
+- name: Run dev-agent analysis
+  run: |
+    dev-agent run "check for obvious bugs in the last commit diff and list them" \
+      --workspace . \
+      --json \
+    | jq -r 'select(.type=="done") | .payload'
+```
+
+---
+
+### Resuming a conversation across runs
+
+```python
+from dev_agent.agent.harness import AgentHarness
+
+harness = AgentHarness()
+thread_id = "my-feature-branch"
+
+# First run
+async for event in harness.run("scaffold a FastAPI CRUD for User", thread_id=thread_id):
+    ...
+
+# Later — same thread keeps context
+async for event in harness.run("now add JWT authentication to those endpoints", thread_id=thread_id):
+    ...
+```
+
 ## Architecture
 
 ```
