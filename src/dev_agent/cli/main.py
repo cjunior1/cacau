@@ -2,8 +2,6 @@
 
 import asyncio
 import json
-import os
-from pathlib import Path
 from typing import Optional
 
 import typer
@@ -18,16 +16,14 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+config_app = typer.Typer(help="Configuration commands.")
+app.add_typer(config_app, name="config")
 
 
 def _get_harness(workspace: str):
     from dev_agent.agent.harness import AgentHarness
     from dev_agent.config import get_settings
-
     settings = get_settings()
-    if not settings.anthropic_api_key:
-        console.print("[red]Error:[/] ANTHROPIC_API_KEY is not set. Add it to .env or export it.")
-        raise typer.Exit(1)
     return AgentHarness(settings), workspace
 
 
@@ -36,6 +32,7 @@ def run_cmd(
     prompt: str = typer.Argument(..., help="Prompt to send to the agent."),
     workspace: str = typer.Option(".", "--workspace", "-w", help="Working directory for tools."),
     thread_id: Optional[str] = typer.Option(None, "--thread", "-t", help="Thread ID (resumes conversation)."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="LLM profile name (overrides config)."),
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON events instead of rendered output."),
 ):
     """Run the agent with a single prompt and stream the response."""
@@ -44,13 +41,18 @@ def run_cmd(
         harness, ws = _get_harness(workspace)
         tid = thread_id or harness.new_thread()
 
-        async for event in harness.run(prompt, thread_id=tid, workspace=ws):
+        async for event in harness.run(prompt, thread_id=tid, workspace=ws, profile=profile):
             if json_output:
                 print(json.dumps(event), flush=True)
                 continue
 
             etype, payload = event["type"], event["payload"]
-            if etype == "token":
+            if etype == "profile_selected":
+                console.print(
+                    f"\n[dim][auto → [cyan]{payload['name']}[/] · {payload['model']}][/dim]\n"
+                    if (profile is None and harness.settings.agent.profile == "auto") else ""
+                )
+            elif etype == "token":
                 print(payload, end="", flush=True)
             elif etype == "tool_call":
                 console.print(f"\n[cyan]⚙ {payload['tool']}[/]", end=" ")
@@ -61,8 +63,6 @@ def run_cmd(
                 console.print(f"[dim]  → {out}[/dim]")
             elif etype == "done":
                 print()
-                if not any(True for e in [event] if e["type"] == "token"):
-                    console.print(payload)
                 console.print(f"\n[dim]thread: {tid}[/dim]")
 
     asyncio.run(_run())
@@ -71,13 +71,14 @@ def run_cmd(
 @app.command("chat")
 def chat_cmd(
     workspace: str = typer.Option(".", "--workspace", "-w", help="Working directory for tools."),
+    profile: Optional[str] = typer.Option(None, "--profile", "-p", help="LLM profile name (overrides config)."),
 ):
     """Start an interactive chat REPL with the agent."""
     from dev_agent.cli.repl import run_repl
 
     async def _chat():
         harness, ws = _get_harness(workspace)
-        await run_repl(harness, workspace=ws)
+        await run_repl(harness, workspace=ws, default_profile=profile)
 
     asyncio.run(_chat())
 
@@ -86,8 +87,8 @@ def chat_cmd(
 def serve_cmd(
     host: str = typer.Option("0.0.0.0", "--host", help="Bind host."),
     port: int = typer.Option(8080, "--port", "-p", help="Bind port."),
-    workspace: str = typer.Option(".", "--workspace", "-w", help="Default workspace for webhook tasks."),
-    secret: str = typer.Option("", "--secret", help="HMAC secret for webhook signature verification."),
+    workspace: str = typer.Option(".", "--workspace", "-w", help="Default workspace."),
+    secret: str = typer.Option("", "--secret", help="HMAC secret for webhook verification."),
 ):
     """Start the webhook server for GitHub/GitLab event processing."""
     import uvicorn
@@ -104,44 +105,62 @@ def serve_cmd(
     console.print(Panel(
         f"[bold green]Dev Agent Webhook Server[/bold green]\n"
         f"Listening on [cyan]http://{host}:{port}[/cyan]\n"
-        f"Workspace: [dim]{ws}[/dim]\n"
-        f"Endpoints: /health  /webhook/github  /webhook/gitlab",
+        f"Workspace: [dim]{ws}[/dim]",
         border_style="green",
     ))
     uvicorn.run(web_app, host=host, port=port, log_level="warning")
 
 
-@app.command("config")
-def config_cmd(
-    action: str = typer.Argument("show", help="Action: show | set"),
-    key: Optional[str] = typer.Argument(None, help="Config key (dot-notation, e.g. agent.model)"),
-    value: Optional[str] = typer.Argument(None, help="New value to set"),
-):
-    """Show or update agent configuration."""
-    from dev_agent.config import get_settings
+@config_app.command("show")
+def config_show_cmd():
+    """Show the active configuration."""
     import yaml
+    from dev_agent.config import get_settings
 
     settings = get_settings()
+    data = {
+        "agent": settings.agent.model_dump(),
+        "llm_selector": settings.llm_selector.model_dump(),
+        "profiles": {name: p.model_dump() for name, p in settings.profiles.items()},
+        "harness": settings.harness.model_dump(),
+        "webhooks": settings.webhooks.model_dump(),
+    }
+    console.print(Syntax(yaml.dump(data, default_flow_style=False), "yaml", theme="monokai"))
 
-    if action == "show":
-        data = {
-            "agent": settings.agent.model_dump(),
-            "harness": settings.harness.model_dump(),
-            "webhooks": settings.webhooks.model_dump(),
-            "workspace": settings.workspace_dir,
-            "api_key_set": bool(settings.anthropic_api_key),
-        }
-        console.print(Syntax(yaml.dump(data, default_flow_style=False), "yaml", theme="monokai"))
 
-    elif action == "set":
-        if not key or value is None:
-            console.print("[red]Usage:[/] dev-agent config set <key> <value>")
-            raise typer.Exit(1)
-        console.print(f"[yellow]Note:[/] Use .env or config/settings.yaml to persist: [cyan]{key}[/] = [green]{value}[/]")
+@config_app.command("check")
+def config_check_cmd():
+    """Test connectivity for all configured LLM profiles."""
+    import asyncio
+    from dev_agent.agent.health import check_all
+    from dev_agent.config import get_settings
 
-    else:
-        console.print(f"[red]Unknown action:[/] {action}. Use 'show' or 'set'.")
-        raise typer.Exit(1)
+    settings = get_settings()
+    console.print("\n[bold]Checking LLM profiles...[/bold]\n")
+
+    statuses = asyncio.run(check_all(settings.profiles))
+
+    table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+    table.add_column("", width=3)
+    table.add_column("Profile", style="cyan", no_wrap=True, min_width=12)
+    table.add_column("Provider / Model", min_width=30)
+    table.add_column("Latency", justify="right", min_width=8)
+    table.add_column("Result / Error")
+
+    ok_count = 0
+    for s in statuses:
+        icon = "[green]✓[/]" if s.ok else "[red]✗[/]"
+        provider_model = f"{s.provider} / {s.model}"
+        latency = f"{s.latency_ms:.0f}ms" if s.ok else "—"
+        result = f'[dim]"{s.snippet}"[/dim]' if s.ok else f"[red]{s.error}[/red]"
+        table.add_row(icon, s.name, provider_model, latency, result)
+        if s.ok:
+            ok_count += 1
+
+    console.print(table)
+    total = len(statuses)
+    colour = "green" if ok_count == total else "yellow" if ok_count > 0 else "red"
+    console.print(f"\n[{colour}]{ok_count}/{total} profiles healthy.[/]\n")
 
 
 @app.command("tools")
