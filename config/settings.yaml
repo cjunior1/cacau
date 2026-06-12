@@ -1,9 +1,60 @@
+profiles:
+  powerful:
+    provider: anthropic
+    model: claude-opus-4-8
+    api_key_env: ANTHROPIC_API_KEY
+    temperature: 0.1
+    streaming: true
+    description: >
+      Best for complex reasoning, architecture decisions, and reviewing
+      large codebases. Use when the task requires deep analysis or multi-step planning.
+
+  balanced:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    api_key_env: ANTHROPIC_API_KEY
+    temperature: 0.1
+    streaming: true
+    description: >
+      Good balance of speed and quality. Suitable for debugging, writing
+      unit tests, medium-complexity refactors, and code explanations.
+
+  fast:
+    provider: groq
+    model: llama-3.3-70b-versatile
+    api_key_env: GROQ_API_KEY
+    temperature: 0.2
+    streaming: true
+    description: >
+      Fast and cheap. Best for simple tasks: formatting code, explaining
+      short functions, quick Q&A, and anything that does not require deep reasoning.
+
+  openai:
+    provider: openai
+    model: gpt-4o-mini
+    api_key_env: OPENAI_API_KEY
+    temperature: 0.1
+    streaming: true
+    description: >
+      OpenAI GPT-4o-mini. Good alternative for debugging and refactoring
+      when Anthropic is unavailable.
+
+  local:
+    provider: ollama
+    model: qwen2.5-coder:7b
+    base_url: http://localhost:11434
+    description: >
+      Local model, no API cost, no data leaves the machine. Use for
+      sensitive codebases or offline environments.
+
 agent:
-  model: "claude-sonnet-4-6"
+  profile: auto
   max_iterations: 25
   recursion_limit: 50
-  temperature: 0.1
   streaming: true
+
+llm_selector:
+  profile: fast
 
 harness:
   checkpointing: true
@@ -27,11 +78,6 @@ webhooks:
   host: "0.0.0.0"
   port: 8080
   secret: ""
-  endpoints:
-    - path: "/webhook/github"
-      event_type: "github"
-    - path: "/webhook/gitlab"
-      event_type: "gitlab"
 
 cli:
   history_file: "~/.dev_agent_history"
