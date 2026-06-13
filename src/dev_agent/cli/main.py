@@ -2,9 +2,11 @@
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Optional
 
 import typer
+import yaml
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -17,8 +19,72 @@ app = typer.Typer(
 )
 console = Console()
 config_app = typer.Typer(help="Configuration commands.")
+profile_app = typer.Typer(help="Manage LLM profiles.")
+key_app = typer.Typer(help="Manage API keys in .env.")
 app.add_typer(config_app, name="config")
+config_app.add_typer(profile_app, name="profile")
+config_app.add_typer(key_app, name="key")
 
+# Paths
+_SETTINGS_PATH = Path(__file__).parent.parent.parent.parent / "config" / "settings.yaml"
+_ENV_PATH = Path(__file__).parent.parent.parent.parent / ".env"
+
+_PROVIDER_DEFAULTS: dict[str, dict] = {
+    "anthropic": {"model": "claude-sonnet-4-6",       "api_key_env": "ANTHROPIC_API_KEY"},
+    "openai":    {"model": "gpt-4o-mini",             "api_key_env": "OPENAI_API_KEY"},
+    "google":    {"model": "gemini-1.5-flash",        "api_key_env": "GOOGLE_API_KEY"},
+    "groq":      {"model": "llama-3.3-70b-versatile", "api_key_env": "GROQ_API_KEY"},
+    "ollama":    {"model": "qwen2.5-coder:7b",        "api_key_env": None},
+}
+
+
+# ── File I/O helpers ──────────────────────────────────────────────────────────
+
+def _read_yaml_raw(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
+def _write_yaml_raw(data: dict, path: Path) -> None:
+    with open(path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+
+def _write_env_key(key: str, value: str, env_path: Path) -> None:
+    lines = env_path.read_text().splitlines() if env_path.exists() else []
+    updated = False
+    for i, line in enumerate(lines):
+        if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
+            lines[i] = f"{key}={value}"
+            updated = True
+            break
+    if not updated:
+        lines.append(f"{key}={value}")
+    env_path.write_text("\n".join(lines) + "\n")
+
+
+def _read_env(env_path: Path) -> dict[str, str]:
+    result = {}
+    if not env_path.exists():
+        return result
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        result[k.strip()] = v.strip()
+    return result
+
+
+def _mask(value: str) -> str:
+    if len(value) <= 8:
+        return "***"
+    return value[:4] + "***" + value[-4:]
+
+
+# ── Main agent helpers ────────────────────────────────────────────────────────
 
 def _get_harness(workspace: str):
     from dev_agent.agent.harness import AgentHarness
@@ -26,6 +92,8 @@ def _get_harness(workspace: str):
     settings = get_settings()
     return AgentHarness(settings), workspace
 
+
+# ── run ───────────────────────────────────────────────────────────────────────
 
 @app.command("run")
 def run_cmd(
@@ -68,6 +136,8 @@ def run_cmd(
     asyncio.run(_run())
 
 
+# ── chat ──────────────────────────────────────────────────────────────────────
+
 @app.command("chat")
 def chat_cmd(
     workspace: str = typer.Option(".", "--workspace", "-w", help="Working directory for tools."),
@@ -82,6 +152,8 @@ def chat_cmd(
 
     asyncio.run(_chat())
 
+
+# ── serve ─────────────────────────────────────────────────────────────────────
 
 @app.command("serve")
 def serve_cmd(
@@ -111,10 +183,28 @@ def serve_cmd(
     uvicorn.run(web_app, host=host, port=port, log_level="warning")
 
 
+# ── tools ─────────────────────────────────────────────────────────────────────
+
+@app.command("tools")
+def tools_cmd():
+    """List all available agent tools."""
+    from dev_agent.tools.registry import list_tools
+
+    table = Table(title="Available Tools", show_header=True, header_style="bold cyan")
+    table.add_column("Name", style="cyan", no_wrap=True)
+    table.add_column("Description")
+
+    for name, desc in list_tools().items():
+        table.add_row(name, desc)
+
+    console.print(table)
+
+
+# ── config show / check ───────────────────────────────────────────────────────
+
 @config_app.command("show")
 def config_show_cmd():
     """Show the active configuration."""
-    import yaml
     from dev_agent.config import get_settings
 
     settings = get_settings()
@@ -131,7 +221,6 @@ def config_show_cmd():
 @config_app.command("check")
 def config_check_cmd():
     """Test connectivity for all configured LLM profiles."""
-    import asyncio
     from dev_agent.agent.health import check_all
     from dev_agent.config import get_settings
 
@@ -163,20 +252,222 @@ def config_check_cmd():
     console.print(f"\n[{colour}]{ok_count}/{total} profiles healthy.[/]\n")
 
 
-@app.command("tools")
-def tools_cmd():
-    """List all available agent tools."""
-    from dev_agent.tools.registry import list_tools
+# ── config profile ────────────────────────────────────────────────────────────
 
-    table = Table(title="Available Tools", show_header=True, header_style="bold cyan")
-    table.add_column("Name", style="cyan", no_wrap=True)
-    table.add_column("Description")
+@profile_app.command("list")
+def profile_list_cmd():
+    """List all configured LLM profiles."""
+    from dev_agent.config import get_settings
 
-    for name, desc in list_tools().items():
-        table.add_row(name, desc)
+    settings = get_settings()
+    active = settings.agent.profile
 
+    table = Table(show_header=True, header_style="bold cyan", box=None, pad_edge=False)
+    table.add_column("", width=3)
+    table.add_column("Name", style="cyan", no_wrap=True, min_width=14)
+    table.add_column("Provider", min_width=10)
+    table.add_column("Model", min_width=28)
+    table.add_column("API Key Env", min_width=20)
+
+    for name, p in settings.profiles.items():
+        is_active = (name == active) or (active == "auto" and name == next(iter(settings.profiles)))
+        icon = "[green]✓[/]" if name == active else "[dim]·[/dim]"
+        api_key = p.api_key_env or "[dim]—[/dim]"
+        table.add_row(icon, name, p.provider, p.model, api_key)
+
+    console.print()
     console.print(table)
+    console.print(f"\n[dim]Default profile: [cyan]{active}[/cyan][/dim]\n")
 
+
+@profile_app.command("add")
+def profile_add_cmd(
+    name: Optional[str] = typer.Argument(None, help="Profile name (prompted if omitted)."),
+):
+    """Add or update an LLM profile interactively."""
+    from dev_agent.config import reset_settings
+
+    console.print("\n[bold cyan]Add LLM Profile[/bold cyan]\n")
+
+    # Name
+    if not name:
+        name = typer.prompt("Profile name")
+    name = name.strip()
+
+    data = _read_yaml_raw(_SETTINGS_PATH)
+    existing_profiles = data.get("profiles", {})
+
+    if name in existing_profiles:
+        overwrite = typer.confirm(f"Profile '[cyan]{name}[/cyan]' already exists. Overwrite?", default=False)
+        if not overwrite:
+            raise typer.Abort()
+
+    # Provider
+    providers = list(_PROVIDER_DEFAULTS.keys())
+    console.print(f"Providers: {', '.join(providers)}")
+    provider = typer.prompt("Provider", default="anthropic")
+    while provider not in providers:
+        console.print(f"[red]Unknown provider. Choose from: {', '.join(providers)}[/red]")
+        provider = typer.prompt("Provider", default="anthropic")
+
+    defaults = _PROVIDER_DEFAULTS[provider]
+
+    # Model
+    model = typer.prompt("Model", default=defaults["model"])
+
+    # API key env var
+    if provider == "ollama":
+        api_key_env = None
+    else:
+        api_key_env = typer.prompt("API key env var", default=defaults["api_key_env"] or "")
+        api_key_env = api_key_env.strip() or None
+
+    # Base URL (ollama or custom)
+    base_url = None
+    if provider == "ollama":
+        base_url = typer.prompt("Base URL", default="http://localhost:11434")
+    else:
+        custom = typer.confirm("Set a custom base URL? (for proxies or local endpoints)", default=False)
+        if custom:
+            base_url = typer.prompt("Base URL")
+
+    # Description
+    description = typer.prompt("Description (optional)", default="")
+
+    # Temperature
+    temperature = typer.prompt("Temperature", default="0.1")
+    try:
+        temperature = float(temperature)
+    except ValueError:
+        temperature = 0.1
+
+    # Preview
+    profile_dict: dict = {
+        "provider": provider,
+        "model": model,
+        "temperature": temperature,
+        "streaming": True,
+    }
+    if api_key_env:
+        profile_dict["api_key_env"] = api_key_env
+    if base_url:
+        profile_dict["base_url"] = base_url
+    if description:
+        profile_dict["description"] = description
+
+    console.print()
+    console.print(Panel(
+        Syntax(yaml.dump({name: profile_dict}, default_flow_style=False), "yaml", theme="monokai"),
+        title="Profile preview",
+        border_style="cyan",
+    ))
+
+    confirm = typer.confirm("Save this profile?", default=True)
+    if not confirm:
+        raise typer.Abort()
+
+    if "profiles" not in data:
+        data["profiles"] = {}
+    data["profiles"][name] = profile_dict
+    _write_yaml_raw(data, _SETTINGS_PATH)
+    reset_settings()
+
+    console.print(f"\n[green]✓[/green] Profile '[cyan]{name}[/cyan]' saved to {_SETTINGS_PATH.name}\n")
+    if api_key_env:
+        console.print(f"[dim]Don't forget to set [cyan]{api_key_env}[/cyan] — run:[/dim]")
+        console.print(f"  [bold]dev-agent config key set {api_key_env} <your-key>[/bold]\n")
+
+
+@profile_app.command("remove")
+def profile_remove_cmd(
+    name: str = typer.Argument(..., help="Profile name to remove."),
+):
+    """Remove an LLM profile."""
+    from dev_agent.config import reset_settings
+
+    data = _read_yaml_raw(_SETTINGS_PATH)
+    profiles = data.get("profiles", {})
+
+    if name not in profiles:
+        console.print(f"[red]Profile '{name}' not found.[/red]")
+        raise typer.Exit(1)
+
+    active = (data.get("agent") or {}).get("profile", "auto")
+    if name == active:
+        console.print(f"[yellow]Warning:[/yellow] '{name}' is the current default profile (agent.profile = {active}).")
+
+    confirm = typer.confirm(f"Remove profile '{name}'?", default=False)
+    if not confirm:
+        raise typer.Abort()
+
+    del data["profiles"][name]
+    _write_yaml_raw(data, _SETTINGS_PATH)
+    reset_settings()
+    console.print(f"[green]✓[/green] Profile '[cyan]{name}[/cyan]' removed.\n")
+
+
+@profile_app.command("use")
+def profile_use_cmd(
+    name: str = typer.Argument(..., help="Profile name to set as default."),
+):
+    """Set the default LLM profile (writes agent.profile in settings.yaml)."""
+    from dev_agent.config import reset_settings
+
+    data = _read_yaml_raw(_SETTINGS_PATH)
+    profiles = data.get("profiles", {})
+
+    valid = list(profiles.keys()) + ["auto"]
+    if name not in valid:
+        console.print(f"[red]Profile '{name}' not found.[/red] Available: {', '.join(profiles.keys())}, auto")
+        raise typer.Exit(1)
+
+    if "agent" not in data:
+        data["agent"] = {}
+    data["agent"]["profile"] = name
+    _write_yaml_raw(data, _SETTINGS_PATH)
+    reset_settings()
+    console.print(f"[green]✓[/green] Default profile set to '[cyan]{name}[/cyan]'.\n")
+
+
+# ── config key ────────────────────────────────────────────────────────────────
+
+@key_app.command("set")
+def key_set_cmd(
+    key: str = typer.Argument(..., help="Environment variable name (e.g. ANTHROPIC_API_KEY)."),
+    value: str = typer.Argument(..., help="API key value."),
+):
+    """Set an API key in the .env file."""
+    _write_env_key(key, value, _ENV_PATH)
+    console.print(f"[green]✓[/green] [cyan]{key}[/cyan] written to [dim]{_ENV_PATH.name}[/dim]")
+
+    known_keys = {v["api_key_env"] for v in _PROVIDER_DEFAULTS.values() if v["api_key_env"]}
+    if key in known_keys:
+        console.print(f"[dim]Run [bold]dev-agent config check[/bold] to verify connectivity.[/dim]\n")
+
+
+@key_app.command("list")
+def key_list_cmd():
+    """List API keys set in the .env file (values are masked)."""
+    env = _read_env(_ENV_PATH)
+
+    if not env:
+        console.print(f"\n[dim]No .env file found at {_ENV_PATH}[/dim]")
+        console.print(f"[dim]Run [bold]dev-agent config key set KEY value[/bold] to create one.[/dim]\n")
+        return
+
+    table = Table(show_header=True, header_style="bold cyan", box=None, pad_edge=False)
+    table.add_column("Key", style="cyan", no_wrap=True, min_width=28)
+    table.add_column("Value")
+
+    for k, v in env.items():
+        table.add_row(k, _mask(v))
+
+    console.print()
+    console.print(table)
+    console.print(f"\n[dim]Source: {_ENV_PATH}[/dim]\n")
+
+
+# ── entry point ───────────────────────────────────────────────────────────────
 
 def main():
     app()
