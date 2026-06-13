@@ -41,100 +41,180 @@ cacau config key set GROQ_API_KEY gsk_...
 
 Or copy `.env.example` to `.env` and fill in the keys manually.
 
-## Usage
+## CLI Reference
 
-### Single-shot prompt
+### `cacau run`
 
-```bash
-cacau run "explain the structure of this project"
-cacau run "find all TODO comments and summarise them" --workspace /path/to/project
+Run the agent with a single prompt and stream the response.
 
-# Choose a profile
-cacau run "refactor the auth module" --profile powerful
-
-# Override just the model (keeps the profile's provider and API key)
-cacau run "quick question" --profile fast --model llama-3.1-8b-instant
+```
+cacau run [OPTIONS] PROMPT
 ```
 
-### Interactive REPL
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--workspace PATH` | `-w` | Working directory for tools (default: `.`) |
+| `--thread ID` | `-t` | Thread ID to resume a previous conversation |
+| `--profile NAME` | `-p` | LLM profile to use (overrides `agent.profile` in config) |
+| `--model NAME` | `-m` | Model name to use (overrides the profile's model, keeps its provider) |
+| `--json` | | Emit raw JSON events instead of rendered output |
 
-```bash
-cacau chat
-cacau chat --workspace /path/to/project
-cacau chat --profile balanced
-cacau chat --profile anthropic --model claude-haiku-4-5-20251001
+---
+
+### `cacau chat`
+
+Start an interactive REPL session with the agent.
+
 ```
+cacau chat [OPTIONS]
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--workspace PATH` | `-w` | Working directory for tools (default: `.`) |
+| `--profile NAME` | `-p` | LLM profile to use for the session |
+| `--model NAME` | `-m` | Model name to use (overrides the profile's model) |
 
 Available slash commands inside the REPL:
 
-| Command    | Description                        |
-|------------|------------------------------------|
-| `/help`    | List slash commands                |
-| `/tools`   | List all available tools           |
-| `/history` | Show recent prompt history         |
-| `/thread`  | Show current thread ID             |
-| `/threads` | List all active threads            |
-| `/new`     | Start a new conversation thread    |
-| `/clear`   | Clear the screen                   |
-| `/exit`    | Exit the REPL                      |
+| Command | Description |
+|---------|-------------|
+| `/help` | List slash commands |
+| `/tools` | List all available tools |
+| `/history` | Show recent prompt history |
+| `/thread` | Show current thread ID |
+| `/threads` | List all active threads |
+| `/new` | Start a new conversation thread |
+| `/clear` | Clear the screen |
+| `/exit` | Exit the REPL |
 
-### Manage LLM profiles
+---
 
-```bash
-cacau config profile list                      # show all profiles
+### `cacau serve`
 
-# Interactive wizard (prompts for each field)
-cacau config profile add
+Start the webhook server for GitHub/GitLab CI/CD event processing.
 
-# Partially specified — only omitted fields are prompted
-cacau config profile add my-claude --provider anthropic --model claude-opus-4-8
-
-# Fully non-interactive
-cacau config profile add groq-fast \
-  --provider groq \
-  --model llama-3.1-8b-instant \
-  --api-key-env GROQ_API_KEY \
-  --description "Fast Groq model for simple tasks" \
-  --temperature 0.2 \
-  --yes
-
-# Edit an existing profile (current values shown as defaults)
-cacau config profile edit fast
-cacau config profile edit fast --model llama-3.1-8b-instant --yes
-
-cacau config profile use powerful              # set default profile
-cacau config profile remove my-old            # remove a profile
+```
+cacau serve [OPTIONS]
 ```
 
-### Manage API keys
-
-```bash
-cacau config key set ANTHROPIC_API_KEY sk-ant-...
-cacau config key set GROQ_API_KEY gsk_...
-cacau config key list                # show keys (masked)
-```
-
-### Check connectivity
-
-```bash
-cacau config check      # ping all profiles and show latency
-cacau config show       # print full active configuration
-```
-
-### Webhook server
-
-```bash
-cacau serve --port 8080 --secret my-hmac-secret --workspace /path/to/project
-```
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--host HOST` | | Bind host (default: `0.0.0.0`) |
+| `--port PORT` | `-p` | Bind port (default: `8080`) |
+| `--workspace PATH` | `-w` | Default workspace for incoming requests |
+| `--secret TEXT` | | HMAC-SHA256 secret for webhook signature verification |
 
 Endpoints:
 
-| Method | Path               | Description                              |
-|--------|--------------------|------------------------------------------|
-| GET    | `/health`          | Health check                             |
-| POST   | `/webhook/github`  | GitHub events (PR, push, issue)          |
-| POST   | `/webhook/gitlab`  | GitLab events (MR, push, issue)          |
-| POST   | `/webhook/run`     | Generic: `{"prompt": "...", "workspace": "..."}` |
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check |
+| `POST` | `/webhook/github` | GitHub events (PR, push, issue) |
+| `POST` | `/webhook/gitlab` | GitLab events (MR, push, issue) |
+| `POST` | `/webhook/run` | Generic: `{"prompt": "...", "workspace": "..."}` |
+
+---
+
+### `cacau tools`
+
+List all tools available to the agent. No options.
+
+---
+
+### `cacau config show`
+
+Print the full active configuration as YAML (profiles, agent settings, harness, webhooks). No options.
+
+---
+
+### `cacau config check`
+
+Ping each configured LLM profile with a test prompt and display latency and status. Requires API keys to be set. No options.
+
+---
+
+### `cacau config profile list`
+
+Display a table of all configured profiles showing provider, model, API key env var, and which is the active default. No options.
+
+---
+
+### `cacau config profile add`
+
+Add a new LLM profile. Any omitted option is prompted interactively.
+
+```
+cacau config profile add [OPTIONS] [NAME]
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--provider TEXT` | | Provider: `anthropic`, `openai`, `google`, `groq`, `ollama` |
+| `--model TEXT` | `-m` | Model name (e.g. `claude-opus-4-8`, `gpt-4o-mini`) |
+| `--api-key-env TEXT` | | Name of the env var holding the API key |
+| `--base-url TEXT` | | Base URL for Ollama or custom proxy endpoints |
+| `--description TEXT` | `-d` | Profile description (used by auto-selector) |
+| `--temperature FLOAT` | | Sampling temperature (default: `0.1`) |
+| `--yes` | `-y` | Skip the confirmation prompt |
+
+---
+
+### `cacau config profile edit`
+
+Edit an existing profile. Any omitted option is prompted with the current value as default.
+
+```
+cacau config profile edit [OPTIONS] NAME
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--provider TEXT` | | Change the provider |
+| `--model TEXT` | `-m` | Change the model name |
+| `--api-key-env TEXT` | | Change the API key env var |
+| `--base-url TEXT` | | Change the base URL (pass empty string to remove) |
+| `--description TEXT` | `-d` | Change the description |
+| `--temperature FLOAT` | | Change the sampling temperature |
+| `--yes` | `-y` | Skip the confirmation prompt |
+
+---
+
+### `cacau config profile use`
+
+Set the default profile (`agent.profile` in `settings.yaml`). Pass `auto` to restore auto-selection.
+
+```
+cacau config profile use NAME
+```
+
+---
+
+### `cacau config profile remove`
+
+Remove a profile from `settings.yaml`.
+
+```
+cacau config profile remove NAME
+```
+
+---
+
+### `cacau config key set`
+
+Write an API key to the `.env` file (creates the file if it doesn't exist).
+
+```
+cacau config key set KEY VALUE
+```
+
+---
+
+### `cacau config key list`
+
+List all keys present in `.env` with values masked (e.g. `sk-an***1234`).
+
+---
 
 ## Examples
 
