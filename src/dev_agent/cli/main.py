@@ -392,7 +392,106 @@ def profile_add_cmd(
     console.print(f"\n[green]✓[/green] Profile '[cyan]{name}[/cyan]' saved to {_SETTINGS_PATH.name}\n")
     if api_key_env:
         console.print(f"[dim]Don't forget to set [cyan]{api_key_env}[/cyan] — run:[/dim]")
-        console.print(f"  [bold]dev-agent config key set {api_key_env} <your-key>[/bold]\n")
+        console.print(f"  [bold]cacau config key set {api_key_env} <your-key>[/bold]\n")
+
+
+@profile_app.command("edit")
+def profile_edit_cmd(
+    name: str = typer.Argument(..., help="Profile name to edit."),
+    provider: Optional[str] = typer.Option(None, "--provider", help="Provider: anthropic, openai, google, groq, ollama."),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Model name."),
+    api_key_env: Optional[str] = typer.Option(None, "--api-key-env", help="Env var holding the API key."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Base URL (for Ollama or proxies). Pass empty string to remove."),
+    description: Optional[str] = typer.Option(None, "--description", "-d", help="Profile description."),
+    temperature: Optional[float] = typer.Option(None, "--temperature", help="Sampling temperature."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
+):
+    """Edit an existing LLM profile. Omitted flags are prompted with current values as default."""
+    from dev_agent.config import reset_settings
+
+    data = _read_yaml_raw(_SETTINGS_PATH)
+    profiles = data.get("profiles", {})
+
+    if name not in profiles:
+        console.print(f"[red]Profile '{name}' not found.[/red]")
+        console.print(f"[dim]Available: {', '.join(profiles.keys())}[/dim]")
+        raise typer.Exit(1)
+
+    current = profiles[name]
+    providers = list(_PROVIDER_DEFAULTS.keys())
+    non_interactive = any([provider, model, api_key_env, base_url, description, temperature is not None])
+
+    if not non_interactive:
+        console.print(f"\n[bold cyan]Edit profile '[/bold cyan][cyan]{name}[/cyan][bold cyan]'[/bold cyan] — press Enter to keep current value\n")
+
+    # Provider
+    if provider is None:
+        provider = typer.prompt("Provider", default=current.get("provider", "anthropic"))
+        while provider not in providers:
+            console.print(f"[red]Unknown provider. Choose from: {', '.join(providers)}[/red]")
+            provider = typer.prompt("Provider", default=current.get("provider", "anthropic"))
+
+    # Model
+    if model is None:
+        model = typer.prompt("Model", default=current.get("model", ""))
+
+    # API key env var
+    if provider == "ollama":
+        api_key_env = None
+    elif api_key_env is None:
+        raw = typer.prompt("API key env var", default=current.get("api_key_env") or "")
+        api_key_env = raw.strip() or None
+
+    # Base URL
+    if base_url is None:
+        if provider == "ollama":
+            base_url = typer.prompt("Base URL", default=current.get("base_url") or "http://localhost:11434")
+        elif current.get("base_url") or not non_interactive:
+            raw = typer.prompt("Base URL (leave blank to remove)", default=current.get("base_url") or "")
+            base_url = raw.strip() or None
+    else:
+        base_url = base_url.strip() or None
+
+    # Description
+    if description is None:
+        description = typer.prompt("Description", default=current.get("description") or "")
+    description = description.strip() or None
+
+    # Temperature
+    if temperature is None:
+        raw_temp = typer.prompt("Temperature", default=str(current.get("temperature", 0.1)))
+        try:
+            temperature = float(raw_temp)
+        except ValueError:
+            temperature = current.get("temperature", 0.1)
+
+    updated: dict = {
+        "provider": provider,
+        "model": model,
+        "temperature": temperature,
+        "streaming": current.get("streaming", True),
+    }
+    if api_key_env:
+        updated["api_key_env"] = api_key_env
+    if base_url:
+        updated["base_url"] = base_url
+    if description:
+        updated["description"] = description
+
+    if not yes:
+        console.print()
+        console.print(Panel(
+            Syntax(yaml.dump({name: updated}, default_flow_style=False), "yaml", theme="monokai"),
+            title="Updated profile",
+            border_style="cyan",
+        ))
+        if not typer.confirm("Save changes?", default=True):
+            raise typer.Abort()
+
+    data["profiles"][name] = updated
+    _write_yaml_raw(data, _SETTINGS_PATH)
+    reset_settings()
+    console.print(f"\n[green]✓[/green] Profile '[cyan]{name}[/cyan]' updated.\n")
 
 
 @profile_app.command("remove")
